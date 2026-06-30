@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: ai-bpmn-generator
+
+server:
+  port: 8080
