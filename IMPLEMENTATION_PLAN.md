@@ -11,12 +11,12 @@
 ## 1. Goals & Non-Goals
 
 ### Goals
-- Take a free-text description of a business process and produce **valid, deployable Camunda 8 BPMN XML**.
+- Take a free-text description of a business process and produce a **valid Camunda 8 BPMN file that opens and edits cleanly in Camunda Modeler**. This is the primary goal.
 - Use a clean, testable pipeline: **NL → JSON IR → deterministic BPMN generation → validation before output**.
 - Make the output easy to verify (download `.bpmn`, open in Camunda Modeler, optional in-page preview).
-- (Stretch) Deploy the workflow to a running Camunda 8 cluster and start an instance live during the demo.
 
 ### Non-Goals (for the hackathon)
+- **Deploying to / running on a live Camunda 8 cluster (Zeebe) and viewing instances in Operate.** Explicitly out of scope for the MVP — deferred to *Future work* (§12). The MVP produces a file, it does not run it.
 - Full BPMN 2.0 coverage. Camunda 8 executes a *subset*; we target that subset only.
 - Production auth / multi-tenancy / persistence.
 - A custom front-end framework (no React/SPA/monorepo). A single optional static HTML page is the most UI we add.
@@ -36,7 +36,7 @@
 ```
         fuzzy / probabilistic                         deterministic / verifiable
   ┌──────────────────────────────┐   ┌──────────────────────────────────────────────────────┐
-  NL text ──LLM──▶ IR (JSON) ──schema-validate──▶ IR→BPMN compiler ──▶ BPMN + DI ──validate/deploy-check──▶ output
+  NL text ──LLM──▶ IR (JSON) ──schema-validate──▶ IR→BPMN compiler ──▶ BPMN + DI ──model-validate──▶ output (.bpmn)
   └──────────────────────────────┘   │  (Camunda zeebe-bpmn-model fluent builder, auto-layout) │
                                       └──────────────────────────────────────────────────────┘
 ```
@@ -63,20 +63,21 @@
    │        │                                                                 │  │
    │        ▼                  ▼                    ▼                  ▼       │  │
    │   LlmClient ──────▶ IrValidator ──────▶ IrToBpmnCompiler ──▶ BpmnValidator  │
-   │   (RestClient to   (Jackson +          (zeebe-bpmn-model    (model validation │
-   │    OpenAI/Anthropic json-schema-        fluent builder +     + optional Zeebe  │
-   │    JSON output)     validator)          Zeebe extensions,    deploy check)     │
+   │   (RestClient to   (Jackson +          (zeebe-bpmn-model    (Bpmn.validate    │
+   │    OpenAI/Anthropic json-schema-        fluent builder +     Model — no live  │
+   │    JSON output)     validator)          Zeebe extensions,    cluster needed)  │
    │                                         auto DI/layout)                   │  │
    │                                                                          │  │
-   │   CamundaDeployService (stretch) ── CamundaClient/ZeebeClient ───────────┘  │
-   │        │                                                                    │
-   └────────┼────────────────────────────────────────────────────────────────┘
-            │ deploy / start instance (stretch)
-            ▼
-   ┌─────────────────────────────────────────────┐
-   │ Camunda 8 (SaaS or self-managed via Docker)  │
-   │  Zeebe gateway · Operate · Tasklist           │
+   └──────────────────────────────────────────────────────────────────────┼──┘
+            │ returns BPMN XML (.bpmn)                                       │
+            ▼                                                                │
+   ┌─────────────────────────────────────────────┐  ◀──────────────────────┘
+   │ Output: download .bpmn / optional in-page     │
+   │ bpmn-js preview → open & edit in Camunda      │
+   │ Modeler                                        │
    └─────────────────────────────────────────────┘
+
+   (Live deploy to a Camunda 8 cluster + Operate = Future work, see §12 — not in MVP.)
 ```
 
 ### 3.2 Tech stack & rationale
@@ -89,12 +90,10 @@
 | IR validation | **`com.networknt:json-schema-validator`** | Validate IR against a JSON Schema (the Java analog of Ajv); precise error paths for the repair loop. |
 | BPMN generation + layout | **`io.camunda:zeebe-bpmn-model`** (`io.camunda.zeebe.model.bpmn.Bpmn`) | Fluent builder with native **Zeebe extension** support (`.zeebeJobType(...)`, user tasks, conditions) **and automatic DI/layout generation**. Core enabler of the deterministic step. |
 | LLM access | **Spring `RestClient`** calling OpenAI/Anthropic with JSON-mode output | No heavy dependency; keep it simple. (`langchain4j` is an optional upgrade if structured-output ergonomics are wanted — not needed for MVP.) |
-| Camunda 8 client (stretch) | **`io.camunda:spring-boot-starter-camunda-sdk`** (`CamundaClient`) | Official Spring SDK to deploy resources + start instances. Underlying: `zeebe-client-java`. |
 | Tests | **JUnit 5** + Spring Boot Test | Unit-test `IrToBpmnCompiler` (golden IR → expected BPMN) independent of the LLM. |
-| Local Camunda 8 (stretch) | **Camunda 8 Run** / docker-compose | One-command cluster for the live-deploy demo. |
 | UI (optional, not a framework) | A **single static `index.html`** served from `src/main/resources/static/`, using **bpmn-js via CDN** to preview the returned XML | Visual proof for the demo with **no build step, no React, no monorepo**. Entirely optional — MVP works headless (REST + downloadable `.bpmn`). |
 
-> **Removed from the previous draft** (per the simplification request): React, pnpm monorepo, Fastify/Node API, `bpmn-moddle`/`zeebe-bpmn-moddle`, `bpmn-auto-layout`, Ajv, `bpmnlint`. Their responsibilities are now covered by Java equivalents above (notably `zeebe-bpmn-model` for build+layout, `json-schema-validator` for IR validation, and an actual Zeebe deploy as the strongest deploy-readiness check).
+> **Removed from the previous draft** (per the simplification request): React, pnpm monorepo, Fastify/Node API, `bpmn-moddle`/`zeebe-bpmn-moddle`, `bpmn-auto-layout`, Ajv, `bpmnlint`. Their responsibilities are now covered by Java equivalents above (notably `zeebe-bpmn-model` for build+layout, `json-schema-validator` for IR validation). Live-deploy dependencies (`spring-boot-starter-camunda-sdk` / `zeebe-client-java`, Docker Camunda 8 Run) are deferred to *Future work* (§12) and are **not** MVP dependencies.
 
 ---
 
@@ -107,8 +106,7 @@ ai-bpmn-generator/
 ├── IMPLEMENTATION_PLAN.md
 ├── README.md
 ├── pom.xml
-├── docker-compose.yml                  # Camunda 8 Run (Phase 3 / stretch)
-├── .env.example  (or application-local.yaml)   # LLM key, Zeebe connection
+├── .env.example  (or application-local.yaml)   # LLM key/config
 │
 └── src/
     ├── main/
@@ -127,12 +125,11 @@ ai-bpmn-generator/
     │   │   │   ├── ProcessIr.java               # records: ProcessIr, Element, Flow
     │   │   │   ├── ElementType.java             # enum = Camunda-8 subset we support
     │   │   │   └── IrValidator.java             # json-schema-validator
-    │   │   ├── bpmn/
-    │   │   │   ├── IrToBpmnCompiler.java        # zeebe-bpmn-model fluent builder
-    │   │   │   ├── ZeebeExtensions.java         # task defs, io mappings, conditions
-    │   │   │   └── BpmnValidator.java           # model validation + deploy-readiness
-    │   │   └── deploy/
-    │   │       └── CamundaDeployService.java    # CamundaClient (stretch)
+    │   │   └── bpmn/
+    │   │       ├── IrToBpmnCompiler.java        # zeebe-bpmn-model fluent builder
+    │   │       ├── ZeebeExtensions.java         # task defs, io mappings, conditions
+    │   │       └── BpmnValidator.java           # Bpmn.validateModel (offline)
+    │   │   (deploy/ CamundaDeployService.java → Future work, §12 — not in MVP)
     │   └── resources/
     │       ├── application.yaml
     │       ├── schema/ir-schema.json            # IR JSON Schema
@@ -155,9 +152,8 @@ ai-bpmn-generator/
 | 4 | **IrValidator** | Deserialize with Jackson; validate against `ir-schema.json`; produce precise error list for repair. | IR JSON → `ProcessIr` (or errors) |
 | 5 | **IrToBpmnCompiler** | Deterministically build BPMN from `ProcessIr` using the `zeebe-bpmn-model` fluent builder; the builder auto-generates DI/layout. | `ProcessIr` → `BpmnModelInstance` → XML |
 | 6 | **ZeebeExtensions** | Attach Zeebe specifics (service-task job type, user-task assignment, FEEL conditions, I/O mappings). | model + IR detail → enriched model |
-| 7 | **BpmnValidator** | Validate the model (`Bpmn.validateModel`) and, when configured, a real Zeebe deploy as the ground-truth deploy-readiness check. | BPMN → pass/fail + report |
-| 8 | **CamundaDeployService** *(stretch)* | Deploy resource and optionally start an instance via `CamundaClient`. | BPMN → process key / instance id |
-| 9 | **ProcessIr / ElementType** | Single source of truth for the IR contract; the `ElementType` enum encodes exactly the Camunda-8 subset we support per phase. | — |
+| 7 | **BpmnValidator** | Validate the model offline with `Bpmn.validateModel` (well-formedness, references) — no running cluster needed. | BPMN → pass/fail + report |
+| 8 | **ProcessIr / ElementType** | Single source of truth for the IR contract; the `ElementType` enum encodes exactly the Camunda-8 subset we support per phase. | — |
 
 ### 5.1 The Intermediate Representation (IR) — sketch
 
@@ -212,7 +208,7 @@ Why the IR (unchanged rationale): **validatable** (JSON Schema), **repairable** 
       ✗ invalid → feed errors back to LLM (repair), retry up to N (e.g. 2)
 5. IrToBpmnCompiler: ProcessIr → zeebe-bpmn-model fluent builder → BpmnModelInstance
       (Zeebe extensions attached; DI/layout auto-generated by the builder)
-6. BpmnValidator: Bpmn.validateModel(...) [+ optional real Zeebe deploy check]
+6. BpmnValidator: Bpmn.validateModel(...) (offline; no running cluster)
 7. Serialize model → XML
 8. Response { bpmnXml, irUsed, report } → client (download .bpmn / optional preview)
 ```
@@ -224,13 +220,7 @@ POST /api/refine { currentIr, instruction:"Add a 2-day timer escalation on revie
   → LLM mutates IR → (same validate → compile → validate pipeline) → updated BPMN
 ```
 
-### 6.3 Deploy (stretch)
-
-```
-POST /api/deploy { bpmnXml }
-  → CamundaClient.newDeployResourceCommand().addProcessModel(model,"process.bpmn").send().join()
-  → (optional) createProcessInstance → view in Operate
-```
+> Live deployment (`POST /api/deploy` → `CamundaClient` → Zeebe → Operate) is **Future work** (§12), not part of the MVP data flow.
 
 ---
 
@@ -256,28 +246,23 @@ Element subset: `startEvent`, `endEvent`, `userTask`, `serviceTask` (with Zeebe 
 - **Repair loop** on both IR-schema and model-validation errors.
 - **Exit:** branching processes validate clean; `/api/refine` works.
 
-### Phase 3 — Live Camunda 8 deployment (high-impact demo moment)
-- `docker-compose` Camunda 8 Run (Zeebe + Operate + Tasklist) **or** Camunda 8 SaaS creds.
-- Add `spring-boot-starter-camunda-sdk`; `CamundaDeployService` deploys + starts an instance; surface ids + an Operate link.
-- **Exit:** generate → deploy → start instance → show it in Operate, live.
+### Phase 3 — Polish (if time remains)
+- Optional `static/index.html` bpmn-js preview so judges see the diagram in-browser before opening Modeler.
+- Iterative chat UX (re-prompt to refine); more few-shot examples; ambiguity handling (clarifying questions); optional generated Camunda Forms.
 
-### Phase 4 — Polish (if time remains)
-- Optional `static/index.html` bpmn-js preview; iterative chat UX.
-- More few-shot examples; ambiguity handling (clarifying questions); generated Camunda Forms.
-
-> **Hackathon priority order:** Phase 1 (must-have) → Phase 3 deploy moment (wow factor) → Phase 2 richness. A polished Phase 1 + one live deploy beats a half-working Phase 2.
+> **Hackathon priority order:** Phase 1 (must-have: NL → valid `.bpmn` openable in Modeler) → Phase 2 (gateways/conditions/events make it impressive) → Phase 3 polish. Live cluster deployment is explicitly *Future work* (§12).
 
 ---
 
 ## 8. Validation Strategy (defense in depth, cheapest first)
 
 1. **IR JSON Schema** (`json-schema-validator`) — structural correctness before any XML exists.
-2. **Model validation** (`Bpmn.validateModel`) — well-formed references/structure from the builder.
-3. **Real Zeebe deploy** (stretch / when a cluster is available) — ground truth: the engine itself accepts or rejects.
+2. **Model validation** (`Bpmn.validateModel`) — well-formed references/structure from the builder, fully offline.
+3. **Open in Camunda Modeler** — the practical acceptance test for the MVP: the file imports and is editable without errors.
 
-Any failing gate can trigger a **bounded LLM repair pass** (feed the precise error back). Cap retries (e.g. ≤2) for latency/cost and to avoid loops.
+Any failing gate (1–2) can trigger a **bounded LLM repair pass** (feed the precise error back). Cap retries (e.g. ≤2) for latency/cost and to avoid loops.
 
-> Note: the JS-era `bpmnlint`/camunda-compat plugin has no direct Maven equivalent; in this stack the equivalent confidence comes from the `zeebe-bpmn-model` builder (which only exposes Zeebe-valid constructs) plus an actual Zeebe deploy as the authoritative check.
+> Note: the JS-era `bpmnlint`/camunda-compat plugin has no direct Maven equivalent; in this stack the confidence comes from the `zeebe-bpmn-model` builder (which only exposes Zeebe-valid constructs) plus `Bpmn.validateModel`. A real Zeebe deploy as an authoritative gate is *Future work* (§12).
 
 ---
 
@@ -289,27 +274,25 @@ Any failing gate can trigger a **bounded LLM repair pass** (feed the precise err
 | LLM produces structurally invalid IR | Pipeline fails | JSON output + `json-schema-validator` + bounded repair loop. |
 | Auto-layout from `zeebe-bpmn-model` looks rough on complex graphs | Ugly diagram | Acceptable for MVP; keep Phase-1 graphs simple; manual tidy in Modeler if needed. |
 | Zeebe extension coverage gaps in the builder | Some constructs not expressible fluently | Fall back to adding raw extension elements via the model API; constrain `ElementType` to what we can emit. |
-| FEEL expressions wrong | Misrouted gateways / deploy fails | Few-shot FEEL examples; validate via deploy; Phase-1 is condition-free. |
+| FEEL expressions wrong | Misrouted gateways; Modeler may warn | Few-shot FEEL examples; keep Phase-1 condition-free; rely on Modeler import for sanity. |
 | No native LLM "structured output" in Java | Malformed JSON | Use provider JSON mode + schema validation + repair; optionally adopt `langchain4j` later. |
 | LLM latency/cost | Slow demo | Small model for IR, cap tokens, bounded retries. |
-| Camunda 8 env setup eats time | No live deploy | Deploy is a *stretch*; MVP only needs a downloadable `.bpmn`. |
 | Scope creep into full BPMN | Nothing finished | Cap supported `ElementType`s per phase. |
 | Secret management (LLM/Zeebe) | Blocked / leaked keys | Externalized config (`application-local.yaml` / env vars), never commit secrets. |
 
 ### Assumptions
 - An LLM API key (OpenAI and/or Anthropic) is available via env/config.
-- Target is **Camunda 8 (Zeebe)**, not Camunda 7.
-- "Executable" = deploys to Zeebe and can start an instance; job-worker implementations are out of scope.
+- Target is **Camunda 8 (Zeebe)** dialect of BPMN, not Camunda 7.
+- MVP success = the generated `.bpmn` opens and edits cleanly in Camunda Modeler (Zeebe-compatible markup); actually running it on a cluster is out of scope.
 - Java 21 + Maven available; team is comfortable with Spring Boot.
-- For the live-deploy stretch, Docker is available locally **or** Camunda 8 SaaS credentials are provided.
 - English-language input for the hackathon.
 
 ---
 
 ## 10. Open Questions
 1. LLM provider & model preference (OpenAI vs Anthropic) and budget?
-2. Camunda 8 target for the live demo: **SaaS** (need credentials) or **self-managed** (Docker)?
-3. Do we need the optional in-page bpmn-js preview, or is downloadable `.bpmn` + Camunda Modeler enough for the demo?
+2. Do we need the optional in-page bpmn-js preview, or is downloadable `.bpmn` + Camunda Modeler enough for the demo?
+3. Which Camunda Modeler do we target for the demo: **Desktop** or **Web** Modeler?
 4. Required element coverage for judging (just tasks/gateways, or events/forms/sub-processes too)?
 5. Single-shot generation or conversational refinement as the headline UX?
 
@@ -317,7 +300,14 @@ Any failing gate can trigger a **bounded LLM repair pass** (feed the precise err
 
 ## 11. Suggested Demo Script
 1. Paste a real-world process description in plain English (curl or the optional page).
-2. Get back BPMN; open it in Camunda Modeler (or the in-page preview) — a clean, laid-out diagram.
-3. Point out the Zeebe job type / FEEL condition (it's *executable*, not just a picture).
-4. Refine with one sentence ("add a 2-day escalation") and regenerate.
-5. Click/POST **Deploy** → show the process running in Camunda **Operate**.
+2. Get back BPMN; open it in **Camunda Modeler** (or the in-page preview) — a clean, laid-out diagram.
+3. Point out the Zeebe job type / FEEL condition in Modeler — it's valid Camunda 8 markup, **editable**, not just a picture.
+4. Refine with one sentence ("add a 2-day escalation") and regenerate; re-open in Modeler.
+5. Make a small manual tweak in Modeler to show the file is fully editable — the deliverable is a real, usable BPMN file.
+
+---
+
+## 12. Future Work (out of scope for the hackathon MVP)
+- **Deploy to a running Camunda 8 cluster + run instances in Operate.** Add `io.camunda:spring-boot-starter-camunda-sdk` (`CamundaClient`) and a `CamundaDeployService`; provide a local cluster via `docker-compose` (Camunda 8 Run: Zeebe + Operate + Tasklist) or Camunda 8 SaaS. Flow: `POST /api/deploy { bpmnXml }` → `newDeployResourceCommand().addProcessModel(...)` → optional `createProcessInstance` → Operate link. Adds a real Zeebe deploy as an authoritative validation gate.
+- Job-worker / connector implementations so generated service tasks actually execute.
+- Generated Camunda Forms for user tasks; richer element coverage (sub-processes, events).
